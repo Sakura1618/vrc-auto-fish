@@ -508,10 +508,11 @@ class FishingBot:
         if config.IL_RECORD:
             log.info("  ► 录制模式 — 跳过开局按压, 请手动控制")
         else:
-            log.info("  ► 开局延迟0.5s + 按压0.2s")
+            press_t = getattr(config, 'INITIAL_PRESS_TIME', 0.2)
+            log.info(f"  ► 开局延迟0.5s + 按压{press_t}s")
             time.sleep(0.5)
             self.input.mouse_down()
-            time.sleep(0.2)
+            time.sleep(press_t)
             self.input.mouse_up()
 
         _last_progress_sr = None

@@ -41,8 +41,9 @@ TUNABLE_PARAMS = [
     ("搜索上(px)",    "REGION_UP",        "int",   "白条锁定后向上搜索的像素数"),
     ("搜索下(px)",    "REGION_DOWN",      "int",   "白条锁定后向下搜索的像素数"),
     ("搜索X(px)",     "REGION_X",         "int",   "白条中心左右各N像素范围内检测"),
-    ("收杆等待(s)",   "POST_CATCH_DELAY", "float", "钓鱼结束/失败后等待N秒再抛竿"),
+    ("归正时间(s)",   "POST_CATCH_DELAY", "float", "钓鱼结束/失败后等待N秒再抛竿"),
     ("摇头时长(s)",   "SHAKE_HEAD_TIME",  "float", "摇头每段按住时长,0=不摇头"),
+    ("按压时间(s)",   "INITIAL_PRESS_TIME","float", "开局按压时长(开局延迟0.5s固定)"),
 ]
 
 
@@ -367,6 +368,7 @@ class FishingApp:
             "REGION_X":         100,
             "POST_CATCH_DELAY": 3.0,
             "SHAKE_HEAD_TIME":  0.01,
+            "INITIAL_PRESS_TIME": 0.2,
         }
 
         for attr, default_val in defaults.items():
