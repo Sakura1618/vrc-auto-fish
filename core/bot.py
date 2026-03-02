@@ -532,8 +532,13 @@ class FishingBot:
         _last_green = 0.0
         _PROGRESS_SKIP_FRAMES = 20
         _prev_green = 0.0
+        _last_fish_id_frame = -10**9
+        _cached_fish_key = ""
+        _last_progress_frame = -10**9
         _loop_log_interval = max(1, int(getattr(config, "LOOP_LOG_INTERVAL", 60)))
         _debug_status_interval = max(1, int(getattr(config, "DEBUG_STATUS_INTERVAL", 15)))
+        _fish_id_interval = max(1, int(getattr(config, "YOLO_FISH_ID_INTERVAL", 6)))
+        _progress_interval = max(1, int(getattr(config, "YOLO_PROGRESS_INTERVAL", 2)))
         _show_debug = bool(config.SHOW_DEBUG)
         self._perf_acc = {"cap": 0.0, "det": 0.0, "other": 0.0, "total": 0.0, "n": 0}
         try:
@@ -642,16 +647,24 @@ class FishingBot:
                     bar = _ydet["bar"]
                     _yolo_progress = _ydet.get("progress")
                     if fish is not None:
-                        _save = not _fish_id_saved
-                        _color_key = self.detector.identify_fish_type(
-                            screen, fish, debug_save=_save)
-                        if _save:
-                            _fish_id_saved = True
-                        _matched_key = _color_key
-                        fish_detect_name = _color_key
+                        _need_reid = (
+                            not _cached_fish_key
+                            or (frame - _last_fish_id_frame) >= _fish_id_interval
+                        )
+                        if _need_reid:
+                            _save = not _fish_id_saved
+                            _color_key = self.detector.identify_fish_type(
+                                screen, fish, debug_save=_save)
+                            if _save:
+                                _fish_id_saved = True
+                            _cached_fish_key = _color_key
+                            _last_fish_id_frame = frame
+                        _matched_key = _cached_fish_key
+                        fish_detect_name = _cached_fish_key
                     else:
                         _matched_key = None
                         fish_detect_name = ""
+                        _cached_fish_key = ""
 
                     # YOLO 数据采集: 保存完整窗口画面（不裁剪ROI）
                     if config.YOLO_COLLECT and frame % 10 == 0:
@@ -907,29 +920,34 @@ class FishingBot:
                 if frame <= _PROGRESS_SKIP_FRAMES:
                     pass
                 elif _use_yolo and _yolo_progress is not None:
-                    px, py, pw, ph = _yolo_progress[:4]
-                    pcx = px + pw // 2
-                    strip_w = 5
-                    sx = max(0, pcx - strip_w // 2)
-                    green = self.detector.detect_green_ratio(
-                        screen, (sx, py, strip_w, ph))
-                    if not self._progress_debug_saved and green > 0:
-                        self._progress_debug_saved = True
-                        _pad = 20
-                        _dx = max(0, px - _pad)
-                        _dw = min(pw + _pad * 2, w_scr - _dx)
-                        _dbg = screen[py:py + ph, _dx:_dx + _dw].copy()
-                        cv2.rectangle(_dbg, (sx - _dx, 0),
-                                      (sx - _dx + strip_w, ph),
-                                      (0, 255, 0), 1)
-                        _info = f"green={green:.0%} w={strip_w}"
-                        cv2.putText(_dbg, _info, (2, 16),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                                    (0, 255, 255), 1)
-                        _ddir = os.path.join(config.BASE_DIR, "debug")
-                        os.makedirs(_ddir, exist_ok=True)
-                        cv2.imwrite(
-                            os.path.join(_ddir, "progress_strip.png"), _dbg)
+                    if ((frame - _last_progress_frame) >= _progress_interval
+                            or _last_green <= 0.0):
+                        px, py, pw, ph = _yolo_progress[:4]
+                        pcx = px + pw // 2
+                        strip_w = 5
+                        sx = max(0, pcx - strip_w // 2)
+                        green = self.detector.detect_green_ratio(
+                            screen, (sx, py, strip_w, ph))
+                        _last_progress_frame = frame
+                        if not self._progress_debug_saved and green > 0:
+                            self._progress_debug_saved = True
+                            _pad = 20
+                            _dx = max(0, px - _pad)
+                            _dw = min(pw + _pad * 2, w_scr - _dx)
+                            _dbg = screen[py:py + ph, _dx:_dx + _dw].copy()
+                            cv2.rectangle(_dbg, (sx - _dx, 0),
+                                          (sx - _dx + strip_w, ph),
+                                          (0, 255, 0), 1)
+                            _info = f"green={green:.0%} w={strip_w}"
+                            cv2.putText(_dbg, _info, (2, 16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                                        (0, 255, 255), 1)
+                            _ddir = os.path.join(config.BASE_DIR, "debug")
+                            os.makedirs(_ddir, exist_ok=True)
+                            cv2.imwrite(
+                                os.path.join(_ddir, "progress_strip.png"), _dbg)
+                    else:
+                        green = _last_green
                 else:
                     _sr_for_progress = search_region
                     if bar is not None:

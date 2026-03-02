@@ -118,6 +118,8 @@ YOLO_CONF     = 0.45              # YOLO 检测置信度阈值
 YOLO_DEVICE   = "auto"            # "auto" 优先GPU / "cpu" 强制CPU / "gpu" 强制GPU
 YOLO_IMGSZ    = 640               # 推理输入尺寸(保持与训练一致可避免精度波动)
 YOLO_MAX_DET  = 20                # 单帧最多保留检测框数(减少后处理开销)
+YOLO_FISH_ID_INTERVAL = 6          # YOLO鱼种识别间隔(帧), 降低颜色分类开销
+YOLO_PROGRESS_INTERVAL = 2         # YOLO绿条比例更新间隔(帧), 其余帧复用上一值
 YOLO_COLLECT  = False             # True=钓鱼时自动保存截图用于训练
 TRACK_MIN_ANGLE   = 3.0           # 轨道倾斜角度阈值(度), 超过此值启用旋转补偿
 TRACK_MAX_ANGLE   = 45.0          # 轨道最大合理角度(度), 超过视为误检(如把海平线当轨道)

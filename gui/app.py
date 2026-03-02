@@ -381,6 +381,8 @@ class FishingApp:
             "DEBUG_STATUS_INTERVAL": 15,
             "YOLO_IMGSZ":      640,
             "YOLO_MAX_DET":    20,
+            "YOLO_FISH_ID_INTERVAL": 6,
+            "YOLO_PROGRESS_INTERVAL": 2,
         }
 
         for attr, default_val in defaults.items():
@@ -413,6 +415,8 @@ class FishingApp:
         data["YOLO_DEVICE"] = config.YOLO_DEVICE
         data["YOLO_IMGSZ"] = config.YOLO_IMGSZ
         data["YOLO_MAX_DET"] = config.YOLO_MAX_DET
+        data["YOLO_FISH_ID_INTERVAL"] = config.YOLO_FISH_ID_INTERVAL
+        data["YOLO_PROGRESS_INTERVAL"] = config.YOLO_PROGRESS_INTERVAL
         data["PERF_STATS"] = config.PERF_STATS
         data["PERF_LOG_FRAMES"] = config.PERF_LOG_FRAMES
         data["LOOP_LOG_INTERVAL"] = config.LOOP_LOG_INTERVAL
@@ -487,6 +491,12 @@ class FishingApp:
                     loaded.append(attr)
                 elif attr == "YOLO_MAX_DET":
                     config.YOLO_MAX_DET = max(1, int(val))
+                    loaded.append(attr)
+                elif attr == "YOLO_FISH_ID_INTERVAL":
+                    config.YOLO_FISH_ID_INTERVAL = max(1, int(val))
+                    loaded.append(attr)
+                elif attr == "YOLO_PROGRESS_INTERVAL":
+                    config.YOLO_PROGRESS_INTERVAL = max(1, int(val))
                     loaded.append(attr)
                 elif attr == "SHOW_DEBUG":
                     config.SHOW_DEBUG = bool(val)
