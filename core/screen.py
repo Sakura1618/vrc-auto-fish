@@ -88,6 +88,82 @@ class ScreenCapture:
             self._local.sct = mss()
         return self._local.sct
 
+    def _release_printwindow_ctx(self):
+        """释放当前线程缓存的 PrintWindow GDI 资源。"""
+        ctx = getattr(self._local, "pw_ctx", None)
+        if not ctx:
+            return
+        try:
+            if ctx.get("mDC") and ctx.get("old_bmp"):
+                gdi32.SelectObject(ctx["mDC"], ctx["old_bmp"])
+            if ctx.get("bmp"):
+                gdi32.DeleteObject(ctx["bmp"])
+            if ctx.get("mDC"):
+                gdi32.DeleteDC(ctx["mDC"])
+        except Exception:
+            pass
+        self._local.pw_ctx = None
+
+    def _ensure_printwindow_ctx(self, hwnd, w, h):
+        """确保当前线程存在匹配尺寸的 PrintWindow 缓存上下文。"""
+        ctx = getattr(self._local, "pw_ctx", None)
+        if (ctx and ctx.get("hwnd") == hwnd and ctx.get("w") == w
+                and ctx.get("h") == h and ctx.get("mDC") and ctx.get("bmp")):
+            return ctx
+
+        self._release_printwindow_ctx()
+
+        wDC = user32.GetDC(hwnd)
+        if not wDC:
+            return None
+
+        mDC = None
+        bmp = None
+        old_bmp = None
+        try:
+            mDC = gdi32.CreateCompatibleDC(wDC)
+            if not mDC:
+                return None
+            bmp = gdi32.CreateCompatibleBitmap(wDC, w, h)
+            if not bmp:
+                return None
+            old_bmp = gdi32.SelectObject(mDC, bmp)
+
+            bmi = BITMAPINFOHEADER()
+            bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bmi.biWidth = w
+            bmi.biHeight = -h
+            bmi.biPlanes = 1
+            bmi.biBitCount = 32
+            bmi.biCompression = BI_RGB
+
+            buf = ctypes.create_string_buffer(w * h * 4)
+            ctx = {
+                "hwnd": hwnd,
+                "w": w,
+                "h": h,
+                "mDC": mDC,
+                "bmp": bmp,
+                "old_bmp": old_bmp,
+                "bmi": bmi,
+                "buf": buf,
+            }
+            self._local.pw_ctx = ctx
+            return ctx
+        finally:
+            user32.ReleaseDC(hwnd, wDC)
+            # 创建失败时清理临时资源
+            if (getattr(self._local, "pw_ctx", None) is None):
+                try:
+                    if mDC and old_bmp:
+                        gdi32.SelectObject(mDC, old_bmp)
+                    if bmp:
+                        gdi32.DeleteObject(bmp)
+                    if mDC:
+                        gdi32.DeleteDC(mDC)
+                except Exception:
+                    pass
+
     # ────────────────── PrintWindow 截取 ──────────────────
 
     def _grab_printwindow(self, hwnd):
@@ -107,12 +183,7 @@ class ScreenCapture:
             return None
 
         wDC = None
-        mDC = None
-        bmp = None
-        old_bmp = None
-
         try:
-            # 获取客户区尺寸
             rect = ctypes.wintypes.RECT()
             user32.GetClientRect(hwnd, ctypes.byref(rect))
             w = rect.right
@@ -120,75 +191,37 @@ class ScreenCapture:
             if w <= 0 or h <= 0:
                 return None
 
-            # 创建兼容 DC 和位图
-            wDC = user32.GetDC(hwnd)
-            if not wDC:
+            ctx = self._ensure_printwindow_ctx(hwnd, w, h)
+            if not ctx:
                 return None
 
-            mDC = gdi32.CreateCompatibleDC(wDC)
-            if not mDC:
-                user32.ReleaseDC(hwnd, wDC)
-                return None
-
-            bmp = gdi32.CreateCompatibleBitmap(wDC, w, h)
-            if not bmp:
-                gdi32.DeleteDC(mDC)
-                user32.ReleaseDC(hwnd, wDC)
-                return None
-
-            old_bmp = gdi32.SelectObject(mDC, bmp)
-
-            # PrintWindow: 客户区 + DWM 渲染
+            mDC = ctx["mDC"]
+            bmp = ctx["bmp"]
             ok = user32.PrintWindow(
                 hwnd, mDC,
                 PW_CLIENTONLY | PW_RENDERFULLCONTENT
             )
 
             if not ok:
-                # 回退: 从窗口 DC 直接 BitBlt
-                # （对某些 DirectX 窗口可能返回黑屏）
-                gdi32.BitBlt(mDC, 0, 0, w, h, wDC, 0, 0, SRCCOPY)
+                wDC = user32.GetDC(hwnd)
+                if wDC:
+                    gdi32.BitBlt(mDC, 0, 0, w, h, wDC, 0, 0, SRCCOPY)
 
-            # 读取位图像素数据
-            bmi = BITMAPINFOHEADER()
-            bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-            bmi.biWidth = w
-            bmi.biHeight = -h          # 负值 = 自上而下排列（正常方向）
-            bmi.biPlanes = 1
-            bmi.biBitCount = 32        # 32位 BGRA
-            bmi.biCompression = BI_RGB
-
-            buf = ctypes.create_string_buffer(w * h * 4)
             gdi32.GetDIBits(
                 mDC, bmp, 0, h,
-                buf, ctypes.byref(bmi), DIB_RGB_COLORS
+                ctx["buf"], ctypes.byref(ctx["bmi"]), DIB_RGB_COLORS
             )
 
-            # 清理 GDI 资源
-            gdi32.SelectObject(mDC, old_bmp)
-            gdi32.DeleteObject(bmp)
-            gdi32.DeleteDC(mDC)
-            user32.ReleaseDC(hwnd, wDC)
-
-            # BGRA → BGR (去掉 Alpha 通道)
-            img = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 4))
+            img = np.frombuffer(ctx["buf"], dtype=np.uint8).reshape((h, w, 4))
             return img[:, :, :3].copy()
 
         except Exception as e:
-            # 确保 GDI 资源被清理
-            try:
-                if old_bmp and mDC:
-                    gdi32.SelectObject(mDC, old_bmp)
-                if bmp:
-                    gdi32.DeleteObject(bmp)
-                if mDC:
-                    gdi32.DeleteDC(mDC)
-                if wDC:
-                    user32.ReleaseDC(hwnd, wDC)
-            except Exception:
-                pass
+            self._release_printwindow_ctx()
             log.debug(f"PrintWindow 异常: {e}")
             return None
+        finally:
+            if wDC:
+                user32.ReleaseDC(hwnd, wDC)
 
     def _test_printwindow(self, hwnd) -> bool:
         """
@@ -293,4 +326,5 @@ class ScreenCapture:
         """
         self._use_printwindow = None
         self._pw_tested_hwnd = None
+        self._release_printwindow_ctx()
         log.info("截取方式已重置，下次截图时将重新检测")
