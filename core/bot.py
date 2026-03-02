@@ -532,6 +532,9 @@ class FishingBot:
         _last_green = 0.0
         _PROGRESS_SKIP_FRAMES = 20
         _prev_green = 0.0
+        _loop_log_interval = max(1, int(getattr(config, "LOOP_LOG_INTERVAL", 60)))
+        _debug_status_interval = max(1, int(getattr(config, "DEBUG_STATUS_INTERVAL", 15)))
+        _show_debug = bool(config.SHOW_DEBUG)
         self._perf_acc = {"cap": 0.0, "det": 0.0, "other": 0.0, "total": 0.0, "n": 0}
         try:
             while self.running:
@@ -873,20 +876,31 @@ class FishingBot:
                 # ════════════ ★ 可视化调试 (每帧都画, 内置节流) ════════════
                 # ★ 用原始画面展示 (不旋转), 更直观
                 # (旋转时坐标略有偏差, 但远好过看旋转画面)
-                if not self._need_rotation:
-                    self._show_debug_overlay(
-                        screen_raw, fish, bar, search_region,
-                        bar_search_region=bar_search_region,
-                        progress=_yolo_progress,
-                        status_text=f"🐟 小游戏 F{frame:04d}"
-                    )
-                else:
-                    self._show_debug_overlay(
-                        screen_raw,
-                        bar_search_region=bar_search_region,
-                        progress=_yolo_progress,
-                        status_text=f"🐟 小游戏 F{frame:04d} (旋转{self._track_angle:.0f}°补偿中)"
-                    )
+                if _show_debug:
+                    _status_text = "🐟 小游戏"
+                    if frame % _debug_status_interval == 0:
+                        if self._need_rotation:
+                            _status_text = (
+                                f"🐟 小游戏 F{frame:04d} "
+                                f"(旋转{self._track_angle:.0f}°补偿中)"
+                            )
+                        else:
+                            _status_text = f"🐟 小游戏 F{frame:04d}"
+
+                    if not self._need_rotation:
+                        self._show_debug_overlay(
+                            screen_raw, fish, bar, search_region,
+                            bar_search_region=bar_search_region,
+                            progress=_yolo_progress,
+                            status_text=_status_text,
+                        )
+                    else:
+                        self._show_debug_overlay(
+                            screen_raw,
+                            bar_search_region=bar_search_region,
+                            progress=_yolo_progress,
+                            status_text=_status_text,
+                        )
 
                 # ════════════ 进度条 (记录进度, 不直接判定结束) ════════════
                 green = 0.0
@@ -1056,18 +1070,26 @@ class FishingBot:
                 if frame == 50:
                     self.detector.debug_report = self.debug_mode
 
-                # ── 日志 (每30帧输出) ──
-                if frame % 30 == 0:
-                    fname = self._current_fish_name.replace(
-                        "fish_", ""
-                    ) if self._current_fish_name else ""
-                    fi = (f"鱼[{fname}]Y={fish[1]+fish[3]//2}"
-                          if fish else "鱼=无")
-                    bi = f"条Y={bar[1]+bar[3]//2}" if bar else "条=无"
-                    vel = f"v={self._bar_velocity:+.0f}"
+                # ── 日志 (按配置间隔输出) ──
+                if frame % _loop_log_interval == 0:
+                    if fish:
+                        if self._current_fish_name:
+                            _name = self._current_fish_name[5:] if self._current_fish_name.startswith("fish_") else self._current_fish_name
+                            fi = f"鱼[{_name}]Y={fish[1] + fish[3] // 2}"
+                        else:
+                            fi = f"鱼Y={fish[1] + fish[3] // 2}"
+                    else:
+                        fi = "鱼=无"
+                    bi = f"条Y={bar[1] + bar[3] // 2}" if bar else "条=无"
                     log.info(
-                        f"[F{frame:04d}] {fi} | {bi} | {vel} | "
-                        f"按住:{hold_count} | 进度:{green:.0%}"
+                        "[F%04d] %s | %s | v=%+.0f | 按住:%d | 进度:%d%%" % (
+                            frame,
+                            fi,
+                            bi,
+                            self._bar_velocity,
+                            hold_count,
+                            int(green * 100),
+                        )
                     )
 
                 # ── 安全 ──
