@@ -43,6 +43,13 @@ class YoloDetector:
         self.model = YOLO(model_path)
 
         import config as _cfg
+        self._imgsz = int(getattr(_cfg, "YOLO_IMGSZ", 640))
+        self._max_det = int(getattr(_cfg, "YOLO_MAX_DET", 20))
+        self._predict_kwargs = {
+            "verbose": False,
+            "imgsz": self._imgsz,
+            "max_det": self._max_det,
+        }
         dev_pref = getattr(_cfg, "YOLO_DEVICE", "auto")
         cuda_ok = False
         try:
@@ -64,13 +71,13 @@ class YoloDetector:
                 pass  # 静默加载
                 self.model.predict(
                     warmup_img, conf=0.5, device=target_dev,
-                    verbose=False, imgsz=640,
+                    **self._predict_kwargs,
                 )
                 self._device = target_dev
                 for _ in range(2):
                     self.model.predict(
                         warmup_img, conf=0.5, device=target_dev,
-                        verbose=False, imgsz=640,
+                        **self._predict_kwargs,
                     )
                 pass  # GPU 预热完成
                 return
@@ -83,7 +90,7 @@ class YoloDetector:
         pass  # 静默加载 CPU
         self.model.predict(
             warmup_img, conf=0.5, device="cpu",
-            verbose=False, imgsz=640,
+            **self._predict_kwargs,
         )
         log.info(f"[YOLO] ✓ CPU 模式就绪: {self.model.names}")
 
@@ -115,12 +122,12 @@ class YoloDetector:
             rw = min(rw, w_s - rx)
             rh = min(rh, h_s - ry)
             if rw > 10 and rh > 10:
-                img = screen[ry:ry+rh, rx:rx+rw].copy()
+                img = screen[ry:ry+rh, rx:rx+rw]
                 ox, oy = rx, ry
 
         results = self.model.predict(
             img, conf=self.conf, device=self._device,
-            verbose=False, imgsz=640,
+            **self._predict_kwargs,
         )
 
         detections = {
@@ -139,10 +146,13 @@ class YoloDetector:
         if boxes is None or len(boxes) == 0:
             return detections
 
-        for i in range(len(boxes)):
-            cls = int(boxes.cls[i])
-            conf = float(boxes.conf[i])
-            x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+        cls_arr = boxes.cls.int().cpu().numpy()
+        conf_arr = boxes.conf.cpu().numpy()
+        xyxy_arr = boxes.xyxy.cpu().numpy()
+
+        for cls, conf, (x1, y1, x2, y2) in zip(cls_arr, conf_arr, xyxy_arr):
+            cls = int(cls)
+            conf = float(conf)
 
             bx = int(x1) + ox
             by = int(y1) + oy
