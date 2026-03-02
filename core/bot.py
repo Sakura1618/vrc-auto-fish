@@ -85,6 +85,8 @@ class FishingBot:
         self._last_overlay_time = 0
         self._fps = 0.0
         self._frame_times = []
+        self._perf_ms = {"cap": 0.0, "det": 0.0, "other": 0.0, "total": 0.0}
+        self._perf_acc = {"cap": 0.0, "det": 0.0, "other": 0.0, "total": 0.0, "n": 0}
         self._debug_frame = None         # 最新待显示的帧
         self._debug_lock = threading.Lock()
         self._debug_thread = None
@@ -530,9 +532,19 @@ class FishingBot:
         _last_green = 0.0
         _PROGRESS_SKIP_FRAMES = 20
         _prev_green = 0.0
+        _last_fish_id_frame = -10**9
+        _cached_fish_key = ""
+        _last_progress_frame = -10**9
+        _loop_log_interval = max(1, int(getattr(config, "LOOP_LOG_INTERVAL", 60)))
+        _debug_status_interval = max(1, int(getattr(config, "DEBUG_STATUS_INTERVAL", 15)))
+        _fish_id_interval = max(1, int(getattr(config, "YOLO_FISH_ID_INTERVAL", 6)))
+        _progress_interval = max(1, int(getattr(config, "YOLO_PROGRESS_INTERVAL", 2)))
+        _show_debug = bool(config.SHOW_DEBUG)
+        self._perf_acc = {"cap": 0.0, "det": 0.0, "other": 0.0, "total": 0.0, "n": 0}
         try:
             while self.running:
                 frame += 1
+                _t_loop_start = time.perf_counter()
                 # ★ FPS 计算
                 now_t = time.time()
                 self._frame_times.append(now_t)
@@ -543,9 +555,12 @@ class FishingBot:
                     if dt > 0:
                         self._fps = (len(self._frame_times) - 1) / dt
 
+                _t0 = time.perf_counter()
                 screen_raw = self._grab()
+                _cap_ms = (time.perf_counter() - _t0) * 1000.0
                 screen = self._rotate_for_detection(screen_raw) \
                     if self._need_rotation else screen_raw
+                _det_ms = 0.0
 
                 # ════════════ 超时检测 ════════════
                 elapsed = time.time() - minigame_start
@@ -559,7 +574,9 @@ class FishingBot:
                 # ════════════ 定期检查 UI 是否还存在 ════════════
                 if frame % config.UI_CHECK_FRAMES == 0 and frame > 10:
                     if _use_yolo:
+                        _td = time.perf_counter()
                         _tc = self.yolo.detect(screen, config.DETECT_ROI)
+                        _det_ms += (time.perf_counter() - _td) * 1000.0
                         track_check = _tc["track"]
                     else:
                         track_check = self.detector.find_multiscale(
@@ -623,21 +640,31 @@ class FishingBot:
                 if _use_yolo:
                     # ──── YOLO: 一次推理检测全部 ────
                     _yolo_roi = config.DETECT_ROI
+                    _td = time.perf_counter()
                     _ydet = self.yolo.detect(screen, roi=_yolo_roi)
+                    _det_ms += (time.perf_counter() - _td) * 1000.0
                     fish = _ydet["fish"]
                     bar = _ydet["bar"]
                     _yolo_progress = _ydet.get("progress")
                     if fish is not None:
-                        _save = not _fish_id_saved
-                        _color_key = self.detector.identify_fish_type(
-                            screen, fish, debug_save=_save)
-                        if _save:
-                            _fish_id_saved = True
-                        _matched_key = _color_key
-                        fish_detect_name = _color_key
+                        _need_reid = (
+                            not _cached_fish_key
+                            or (frame - _last_fish_id_frame) >= _fish_id_interval
+                        )
+                        if _need_reid:
+                            _save = not _fish_id_saved
+                            _color_key = self.detector.identify_fish_type(
+                                screen, fish, debug_save=_save)
+                            if _save:
+                                _fish_id_saved = True
+                            _cached_fish_key = _color_key
+                            _last_fish_id_frame = frame
+                        _matched_key = _cached_fish_key
+                        fish_detect_name = _cached_fish_key
                     else:
                         _matched_key = None
                         fish_detect_name = ""
+                        _cached_fish_key = ""
 
                     # YOLO 数据采集: 保存完整窗口画面（不裁剪ROI）
                     if config.YOLO_COLLECT and frame % 10 == 0:
@@ -862,49 +889,65 @@ class FishingBot:
                 # ════════════ ★ 可视化调试 (每帧都画, 内置节流) ════════════
                 # ★ 用原始画面展示 (不旋转), 更直观
                 # (旋转时坐标略有偏差, 但远好过看旋转画面)
-                if not self._need_rotation:
-                    self._show_debug_overlay(
-                        screen_raw, fish, bar, search_region,
-                        bar_search_region=bar_search_region,
-                        progress=_yolo_progress,
-                        status_text=f"🐟 小游戏 F{frame:04d}"
-                    )
-                else:
-                    self._show_debug_overlay(
-                        screen_raw,
-                        bar_search_region=bar_search_region,
-                        progress=_yolo_progress,
-                        status_text=f"🐟 小游戏 F{frame:04d} (旋转{self._track_angle:.0f}°补偿中)"
-                    )
+                if _show_debug:
+                    _status_text = "🐟 小游戏"
+                    if frame % _debug_status_interval == 0:
+                        if self._need_rotation:
+                            _status_text = (
+                                f"🐟 小游戏 F{frame:04d} "
+                                f"(旋转{self._track_angle:.0f}°补偿中)"
+                            )
+                        else:
+                            _status_text = f"🐟 小游戏 F{frame:04d}"
+
+                    if not self._need_rotation:
+                        self._show_debug_overlay(
+                            screen_raw, fish, bar, search_region,
+                            bar_search_region=bar_search_region,
+                            progress=_yolo_progress,
+                            status_text=_status_text,
+                        )
+                    else:
+                        self._show_debug_overlay(
+                            screen_raw,
+                            bar_search_region=bar_search_region,
+                            progress=_yolo_progress,
+                            status_text=_status_text,
+                        )
 
                 # ════════════ 进度条 (记录进度, 不直接判定结束) ════════════
                 green = 0.0
                 if frame <= _PROGRESS_SKIP_FRAMES:
                     pass
                 elif _use_yolo and _yolo_progress is not None:
-                    px, py, pw, ph = _yolo_progress[:4]
-                    pcx = px + pw // 2
-                    strip_w = 5
-                    sx = max(0, pcx - strip_w // 2)
-                    green = self.detector.detect_green_ratio(
-                        screen, (sx, py, strip_w, ph))
-                    if not self._progress_debug_saved and green > 0:
-                        self._progress_debug_saved = True
-                        _pad = 20
-                        _dx = max(0, px - _pad)
-                        _dw = min(pw + _pad * 2, w_scr - _dx)
-                        _dbg = screen[py:py + ph, _dx:_dx + _dw].copy()
-                        cv2.rectangle(_dbg, (sx - _dx, 0),
-                                      (sx - _dx + strip_w, ph),
-                                      (0, 255, 0), 1)
-                        _info = f"green={green:.0%} w={strip_w}"
-                        cv2.putText(_dbg, _info, (2, 16),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                                    (0, 255, 255), 1)
-                        _ddir = os.path.join(config.BASE_DIR, "debug")
-                        os.makedirs(_ddir, exist_ok=True)
-                        cv2.imwrite(
-                            os.path.join(_ddir, "progress_strip.png"), _dbg)
+                    if ((frame - _last_progress_frame) >= _progress_interval
+                            or _last_green <= 0.0):
+                        px, py, pw, ph = _yolo_progress[:4]
+                        pcx = px + pw // 2
+                        strip_w = 5
+                        sx = max(0, pcx - strip_w // 2)
+                        green = self.detector.detect_green_ratio(
+                            screen, (sx, py, strip_w, ph))
+                        _last_progress_frame = frame
+                        if not self._progress_debug_saved and green > 0:
+                            self._progress_debug_saved = True
+                            _pad = 20
+                            _dx = max(0, px - _pad)
+                            _dw = min(pw + _pad * 2, w_scr - _dx)
+                            _dbg = screen[py:py + ph, _dx:_dx + _dw].copy()
+                            cv2.rectangle(_dbg, (sx - _dx, 0),
+                                          (sx - _dx + strip_w, ph),
+                                          (0, 255, 0), 1)
+                            _info = f"green={green:.0%} w={strip_w}"
+                            cv2.putText(_dbg, _info, (2, 16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                                        (0, 255, 255), 1)
+                            _ddir = os.path.join(config.BASE_DIR, "debug")
+                            os.makedirs(_ddir, exist_ok=True)
+                            cv2.imwrite(
+                                os.path.join(_ddir, "progress_strip.png"), _dbg)
+                    else:
+                        green = _last_green
                 else:
                     _sr_for_progress = search_region
                     if bar is not None:
@@ -1045,18 +1088,26 @@ class FishingBot:
                 if frame == 50:
                     self.detector.debug_report = self.debug_mode
 
-                # ── 日志 (每30帧输出) ──
-                if frame % 30 == 0:
-                    fname = self._current_fish_name.replace(
-                        "fish_", ""
-                    ) if self._current_fish_name else ""
-                    fi = (f"鱼[{fname}]Y={fish[1]+fish[3]//2}"
-                          if fish else "鱼=无")
-                    bi = f"条Y={bar[1]+bar[3]//2}" if bar else "条=无"
-                    vel = f"v={self._bar_velocity:+.0f}"
+                # ── 日志 (按配置间隔输出) ──
+                if frame % _loop_log_interval == 0:
+                    if fish:
+                        if self._current_fish_name:
+                            _name = self._current_fish_name[5:] if self._current_fish_name.startswith("fish_") else self._current_fish_name
+                            fi = f"鱼[{_name}]Y={fish[1] + fish[3] // 2}"
+                        else:
+                            fi = f"鱼Y={fish[1] + fish[3] // 2}"
+                    else:
+                        fi = "鱼=无"
+                    bi = f"条Y={bar[1] + bar[3] // 2}" if bar else "条=无"
                     log.info(
-                        f"[F{frame:04d}] {fi} | {bi} | {vel} | "
-                        f"按住:{hold_count} | 进度:{green:.0%}"
+                        "[F%04d] %s | %s | v=%+.0f | 按住:%d | 进度:%d%%" % (
+                            frame,
+                            fi,
+                            bi,
+                            self._bar_velocity,
+                            hold_count,
+                            int(green * 100),
+                        )
                     )
 
                 # ── 安全 ──
@@ -1064,6 +1115,29 @@ class FishingBot:
                     log.warning("鼠标在左上角，安全暂停")
                     self.running = False
                     break
+
+                _total_ms = (time.perf_counter() - _t_loop_start) * 1000.0
+                _other_ms = max(0.0, _total_ms - _cap_ms - _det_ms)
+                self._perf_ms = {"cap": _cap_ms, "det": _det_ms, "other": _other_ms, "total": _total_ms}
+                if config.PERF_STATS:
+                    self._perf_acc["cap"] += _cap_ms
+                    self._perf_acc["det"] += _det_ms
+                    self._perf_acc["other"] += _other_ms
+                    self._perf_acc["total"] += _total_ms
+                    self._perf_acc["n"] += 1
+                    n = self._perf_acc["n"]
+                    if n >= max(1, int(getattr(config, "PERF_LOG_FRAMES", 120))):
+                        log.info(
+                            "[PERF] avg %d帧: cap=%.2fms det=%.2fms other=%.2fms total=%.2fms (%.1f FPS)" % (
+                                n,
+                                self._perf_acc["cap"] / n,
+                                self._perf_acc["det"] / n,
+                                self._perf_acc["other"] / n,
+                                self._perf_acc["total"] / n,
+                                1000.0 / max(1e-6, self._perf_acc["total"] / n),
+                            )
+                        )
+                        self._perf_acc = {"cap": 0.0, "det": 0.0, "other": 0.0, "total": 0.0, "n": 0}
 
                 time.sleep(config.GAME_LOOP_INTERVAL)
 
@@ -1160,6 +1234,13 @@ class FishingBot:
         fps_color = (0, 255, 0) if self._fps >= 10 else (0, 255, 255) if self._fps >= 5 else (0, 0, 255)
         cv2.putText(debug, fps_text, (dw - 120, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, fps_color, 2)
+
+        if config.PERF_STATS:
+            p = self._perf_ms
+            perf_text = f"cap:{p['cap']:.1f}ms det:{p['det']:.1f}ms oth:{p['other']:.1f}ms"
+            cv2.putText(debug, perf_text, (8, y_txt),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 255, 180), 1)
+            y_txt += 20
 
         if status_text:
             cv2.putText(debug, status_text, (8, y_txt),
